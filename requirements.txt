@@ -23,3 +23,4 @@ google-api-python-client
 pydantic[email]
 email-validator
 pdfPlumber
+google.generativeai
