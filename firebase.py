@@ -5,13 +5,13 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-# --- Firebase Initialization ---
-FIREBASE_KEY =os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 
-if not firebase_admin._apps:  # prevents re-init errors on reload
+# --- Firebase Initialization ---
+FIREBASE_KEY = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+
+if not firebase_admin._apps:  # prevent re-initialization
     cred = credentials.Certificate(FIREBASE_KEY)
     firebase_admin.initialize_app(cred)
-
 
 # --- Firebase Auth Token Verification ---
 def verify_token(id_token: str):

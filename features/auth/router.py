@@ -10,7 +10,7 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 class LoginRequest(BaseModel):
     id_token: str
 
-
+ 
 @router.post("/signup", response_model=AuthResponse)
 def signup(payload: SignUpRequest):
     try:

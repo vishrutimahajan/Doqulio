@@ -6,6 +6,7 @@ from firebase_admin import firestore
 from core.gcs import upload_file, download_file
 import google.generativeai as gemini
 from core.firebase import db  # <- import the already initialized db ///////
+from core.config import GEMINI_API_KEY
 
 # --- Patterns for redaction --- ########
 patterns = {
@@ -114,6 +115,12 @@ def process_document(user_id: str, file, document_type: str, mime_type: str):
         "summary": summary,
         "risk_analysis": risk_result
     }
+def check_risk(text: str):
+    prompt = f"Identify legal and compliance risks in the following document:\n\n{text}"
+    return GEMINI_API_KEY(prompt)
 
+def summarize_document(text: str):
+    prompt = f"Summarize the following document:\n\n{text}"
+    return GEMINI_API_KEY(prompt)
 
 #####
