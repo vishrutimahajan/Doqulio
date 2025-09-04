@@ -1,7 +1,7 @@
 from google.cloud import storage
 import os
 
-key_path = "C:/Users/Vishruti/.credentials/gcloudkey.json"
+key_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
 client = storage.Client.from_service_account_json(key_path)
 
 def upload_file(local_path: str, bucket_name: str, destination_blob_name: str):

@@ -1,9 +1,12 @@
 import firebase_admin
 from firebase_admin import auth, credentials
 from fastapi import HTTPException
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 # --- Firebase Initialization ---
-FIREBASE_KEY = "C:/Users/Vishruti/.credentials/service-account.json"
+FIREBASE_KEY =os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 
 if not firebase_admin._apps:  # prevents re-init errors on reload
     cred = credentials.Certificate(FIREBASE_KEY)
