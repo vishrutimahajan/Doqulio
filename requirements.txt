@@ -20,3 +20,7 @@ google-auth-oauthlib
 google-auth-httplib2    
 requests
 google-api-python-client
+pydantic[email]
+email-validator
+pdfPlumber
+google.generativeai
