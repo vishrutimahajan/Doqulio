@@ -7,11 +7,8 @@ python-multipart
 pydantic
 httpx
 aiofiles
-jinja2
 python-dotenv
-sqlalchemy
-databases
-alembic
+
 pytest
 python-docx
 google-cloud-storage
@@ -25,3 +22,7 @@ pydantic[email]
 email-validator
 pdfPlumber
 google.generativeai
+PyMuPDF pilllow
+fitz
+
+
