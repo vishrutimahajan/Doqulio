@@ -1,121 +1,107 @@
-"""
-Chat Service Logic
+# service.py
 
-This file contains the core business logic for the chatbot. It interfaces
-with the Google Gemini API to generate intelligent and context-aware responses.
-"""
 import os
+import io
+from PIL import Image
+import pytesseract
+import docx
+from pypdf import PdfReader
 import google.generativeai as genai
-from typing import List, Dict, Any
-from .schemas import ChatResponse, ChatMessage
+from fastapi import HTTPException, UploadFile, status
 
-# --- IMPORTANT: API Key Configuration ---
-# It's highly recommended to set your API key as an environment variable
-# for security reasons.
-# You can set it in your terminal like this:
-# export GEMINI_API_KEY="YOUR_API_KEY"
+# --- AI Configuration ---
+# Configure the Gemini API with the key from environment variables
 try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    model = genai.GenerativeModel('gemini-2.5-pro')
 except KeyError:
-    # This error will be raised if the environment variable is not set.
-    # You can add more robust error handling or logging here.
-    print("ERROR: GEMINI_API_KEY environment variable not set.")
-    # In a real app, you might want to raise an exception or exit.
-    # For this example, we'll let it fail later if a call is made.
+    raise RuntimeError("GEMINI_API_KEY environment variable not set.")
 
 
-# --- System Prompt for Legal Assistant Persona ---
-# This prompt guides the AI to adopt the desired role, tone, and constraints.
-# It's crucial for ensuring the chatbot is helpful, professional, and safe.
-SYSTEM_PROMPT = """
-You are "Doqulio," an AI assistant that simplifies and verifies documents.
-
-Your role is to:
-Provide short, clear, and concise answers to user questions.
-Explain complex terms in simple, everyday language.
-Guide users step-by-step through the document verification process.
-Stay professional, polite, and neutral at all times.
-
-Key Rules:
-Do not provide legal, medical, or financial advice. If asked, politely decline and recommend consulting a qualified professional.
-Focus only on explaining terms, the verification process, and platform features.
-Keep responses brief and to the point, unless the user requests a detailed explanation.
-Use analogies or examples only if they make the concept simpler to understand.
-If unsure about something, say you don’t have information on that topic.
-
-Core Features:
-Summarization Mode – When a document is uploaded, generate a plain-language summary (like a "TL;DR").
-Highlight & Explain Terms – Detect and explain complex terms in simple words.
-Step-by-Step Verification Flow – Guide users through uploading, checking authenticity, and reviewing flagged issues.
-Glossary on Demand – Provide simple definitions with examples when asked about legal or technical terms.
-Confidence Disclaimer – End responses with:
-“This is general information, not legal advice. Please consult a lawyer for personal guidance.”
-Multi-Mode Replies – Short answer by default, with options for "Explain in detail" or "Summarize."
-Direct Verification Redirect – If a user asks for verification, immediately guide them to the verification page link.
-
-Extra Features:
-Smart Comparison Tool – Compare two documents and highlight differences in plain language.
-Risk & Complexity Tags – Assign readability scores and flag risky terms like "non-refundable" or "waiver of rights."
-Interactive Walkthrough Mode – Walk through a document clause by clause in plain English; user can type "Next" to continue.
-Search Within Document – Answer queries about specific clauses (e.g., “What does Clause 7 say?”).
-Multilingual Support – Explain terms and summaries in the user’s preferred language.
-Document Type Detector – Identify the type of document (contract, rental agreement, affidavit, etc.).
-Voice Mode – Allow users to interact through speech-to-text and text-to-speech for accessibility.
-Privacy & Security Notice – Assure users that documents are processed securely and not stored after verification.
-FAQ Auto-Suggest – Suggest relevant questions proactively (e.g., “Do you want me to explain the payment terms?”).
-Learning Mode (Flashcards/Quiz) – Teach users common legal terms interactively for educational value.
-
-"""
-
-def generate_response(message: str, history: List[Dict[str, Any]]) -> ChatResponse:
+def extract_text_from_file(file: UploadFile) -> str:
     """
-    Generates a chatbot response using the Gemini API.
-
-    Args:
-        message: The user's new message.
-        history: The existing conversation history.
-
-    Returns:
-        A ChatResponse object containing the reply and updated history.
+    Extracts text content from an uploaded file (PDF, DOCX, or Image).
     """
+    content_type = file.content_type
+    file_bytes = file.file.read()
+
     try:
-        # Initialize the generative model
-        # Using a newer model like 1.5 Flash is good for speed and capability.
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=SYSTEM_PROMPT
-        )
+        if content_type == "application/pdf":
+            # Process PDF file
+            reader = PdfReader(io.BytesIO(file_bytes))
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() or ""
+            return text
 
-        # Start a chat session with the provided history
-        chat = model.start_chat(history=history)
+        elif content_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
+            # Process DOCX file
+            doc = docx.Document(io.BytesIO(file_bytes))
+            text = "\n".join([para.text for para in doc.paragraphs])
+            return text
 
-        # Send the new user message to the model
-        response = chat.send_message(message)
+        elif content_type in ["image/jpeg", "image/png"]:
+            # Process Image file using OCR
+            image = Image.open(io.BytesIO(file_bytes))
+            text = pytesseract.image_to_string(image)
+            return text
 
-        # Update history with the user's message and the model's response
-        updated_history = chat.history
-
-        # Convert the history to a serializable format (list of dicts)
-        serializable_history = [
-            {"role": msg.role, "parts": [{"text": part.text} for part in msg.parts]}
-            for msg in updated_history
-        ]
-
-        return ChatResponse(
-            reply=response.text,
-            history=serializable_history
-        )
-
+        else:
+            # Handle unsupported file types
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type: {content_type}. Please upload a PDF, DOCX, or image file."
+            )
     except Exception as e:
-        # Basic error handling. In a production app, you'd want to log this
-        # error in more detail.
-        print(f"An error occurred with the Gemini API: {e}")
-        # Return a user-friendly error message
-        error_history = history
-        error_history.append({"role": "user", "parts": [{"text": message}]})
-        error_history.append({"role": "model", "parts": [{"text": "I'm sorry, but I encountered an error while processing your request. Please try again later."}]})
+        # Catch potential processing errors
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process the uploaded file: {str(e)}"
+        )
 
-        return ChatResponse(
-            reply="I'm sorry, but I encountered an error while processing your request. Please try again later.",
-            history=error_history
+
+def generate_chat_response(prompt: str, document_text: str | None = None) -> str:
+    """
+    Generates a response from the Gemini AI based on the user prompt and optional document context.
+    """
+    # System prompt to define the chatbot's persona and task
+    system_prompt = """
+    You are 'Doqulio', a friendly and helpful AI legal assistant. Your main goal is to demystify complex legal jargon for users.
+
+    Follow these rules:
+    1.  **Prioritize Clarity:** Explain legal terms and clauses in simple, easy-to-understand language.
+    2.  **Be Concise First:** Start with a summary or key points. Use bullet points for readability.
+    3.  **Offer Depth:** End your concise explanation by stating that you can provide a more detailed explanation if the user asks for it.
+    4.  **Use Context When Provided:** If document text is included, base your answers primarily on that text.
+    5.  **General Knowledge for General Questions:** If no document is provided, answer general legal questions to the best of your ability.
+    6.  **Disclaimer:** Always include a brief, friendly disclaimer at the end of your response, like: "Remember, I'm an AI assistant, not a lawyer. It's always a good idea to consult with a qualified legal professional for serious matters."
+    """
+
+    # Combine the system prompt, document context (if any), and user question
+    if document_text:
+        full_prompt = f"""
+        {system_prompt}
+
+        --- DOCUMENT CONTEXT ---
+        {document_text}
+        --- END OF DOCUMENT ---
+
+        Based on the document provided, please answer the following user question: "{prompt}"
+        """
+    else:
+        full_prompt = f"""
+        {system_prompt}
+
+        Please answer the following general question: "{prompt}"
+        """
+
+    try:
+        # Generate content using the AI model
+        response = model.generate_content(full_prompt)
+        return response.text
+    except Exception as e:
+        # Handle potential API errors
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Error communicating with the AI service: {str(e)}"
         )

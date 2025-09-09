@@ -1,35 +1,14 @@
-"""
-Pydantic Schemas for Chatbot API
+# schemas.py
 
-This file defines the data structures for the API request and response bodies.
-Using Pydantic models ensures that the data received and sent by the API
-is validated, typed, and well-structured.
-"""
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any
-
-# Pydantic models need to be able to handle arbitrary types from other libraries
-class Config:
-    arbitrary_types_allowed = True
-
-class ChatMessage(BaseModel):
-    """
-    Represents a single message in the conversation history, adhering to
-    the structure expected by the Gemini API.
-    """
-    role: str = Field(..., description="The role of the sender, either 'user' or 'model'.")
-    parts: List[Dict[str, Any]] = Field(..., description="The content parts of the message.")
-
-class ChatRequest(BaseModel):
-    """
-    Defines the structure of the request body for a chat interaction.
-    """
-    message: str = Field(..., description="The new message sent by the user.", example="What is a notary public?")
-    history: List[ChatMessage] = Field(default=[], description="The previous conversation history to maintain context.")
 
 class ChatResponse(BaseModel):
     """
-    Defines the structure of the response body sent back to the client.
+    Defines the structure for the chatbot's response.
     """
-    reply: str = Field(..., description="The chatbot's generated response.", example="A notary public is a public officer...")
-    history: List[ChatMessage] = Field(..., description="The updated conversation history, including the latest exchange.")
+    answer: str = Field(
+        ...,
+        title="Chatbot Answer",
+        description="The generated response from the chatbot based on the user's query and/or document.",
+        example="A rental agreement is a legal contract between a landlord (property owner) and a tenant..."
+    )
