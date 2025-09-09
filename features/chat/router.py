@@ -5,45 +5,68 @@ This file defines the API routes for the chatbot functionality. It handles
 incoming HTTP requests, validates them using Pydantic schemas, and uses the
 chat service to generate responses.
 """
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
+from typing import Optional
 from . import schemas, service
 
-# Create an APIRouter instance. This allows us to group related endpoints.
+# Create an APIRouter instance
 router = APIRouter(
-    prefix="/chat",  # All routes in this file will be prefixed with /chat
-    tags=["Chatbot"]  # Tag for organizing endpoints in the API docs
+    prefix="/chat",   # All routes will be under /chat
+    tags=["Chatbot"]  # Group in API docs
 )
+
 
 @router.post(
     "/",
     response_model=schemas.ChatResponse,
     summary="Handle a chat conversation",
-    description="Sends a user message and conversation history to the chatbot and gets a response."
+    description="""
+    Sends a user message, conversation history, and optional file
+    to the chatbot and gets a response.
+    """
 )
-async def handle_chat_message(request: schemas.ChatRequest):
+async def handle_chat_request(
+    message: str = Form(..., description="The user's question or prompt for the chatbot."),
+    history: Optional[str] = Form("[]", description="Conversation history in JSON format (optional)."),
+    file: Optional[UploadFile] = File(None, description="Optional: Upload a document (PDF, DOCX, image) for context-aware answers.")
+):
     """
     Main endpoint for chatbot interaction.
 
-    - **Receives**: A JSON object containing the user's `message` and the
-      conversation `history`.
-    - **Processes**: Passes the message and history to the chat service, which
-      interacts with the Gemini API.
-    - **Returns**: A JSON object containing the chatbot's `reply` and the
-      `updated_history`.
+    - **Receives**: User's message, optional history, optional file
+    - **Processes**:
+        * Extracts text from file (if provided)
+        * Calls the chatbot service with message + history + document context
+    - **Returns**: Chatbot's reply and updated conversation history
     """
-    try:
-        # Convert Pydantic ChatMessage objects in history to simple dicts
-        # as expected by the service layer and Gemini API.
-        history_dicts = [msg.model_dump() for msg in request.history]
+    document_text = None
 
-        # Call the service function to get the response from the Gemini API
-        response = service.generate_response(message=request.message, history=history_dicts)
+    # Defensive: ignore empty string values
+    if isinstance(file, str) and file.strip() == "":
+        file = None
+
+    # Extract document text if file provided
+    if file is not None:
+        try:
+            document_text = service.extract_text_from_file(file)
+            if not document_text or document_text.isspace():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Could not extract text from the uploaded file. It might be empty or unreadable."
+                )
+        except HTTPException as e:
+            raise e
+
+    try:
+        # Call the service to generate chatbot response
+        response = service.generate_response(
+            message=message,
+            history=history,
+            document_text=document_text
+        )
         return response
 
     except Exception as e:
-        # If any unexpected error occurs in the service layer,
-        # return a generic 500 Internal Server Error.
-        # In a production environment, you should log the error `e` for debugging.
         print(f"Unhandled error in chat endpoint: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
