@@ -22,6 +22,12 @@ except KeyError:
     print("ERROR: GEMINI_API_KEY environment variable not set.")
     # In a real app, you might want to raise an exception or exit.
     # For this example, we'll let it fail later if a call is made.
+gov_links = {
+    "pan card": "https://www.onlineservices.nsdl.com/paam/endUserRegisterContact.html",
+    "aadhaar": "https://uidai.gov.in/",
+    "passport": "https://www.passportindia.gov.in/",
+    "income tax": "https://www.incometax.gov.in/",
+}
 
 
 # --- System Prompt for Legal Assistant Persona ---
@@ -35,6 +41,11 @@ Provide short, clear, and concise answers to user questions.
 Explain complex terms in simple, everyday language.
 Guide users step-by-step through the document verification process.
 Stay professional, polite, and neutral at all times.
+Provide steps for obtaining any legal documents. 
+Provide instructions for verifying documents.
+When asked about specific legal terms, explain them simply without giving legal advice.
+Example:
+"How to make a pan card?" -> "Following are the documents required to make a pan card: [list of documents]. You can apply online at [official website link]."
 
 Key Rules:
 Do not provide legal, medical, or financial advice. If asked, politely decline and recommend consulting a qualified professional.
@@ -42,30 +53,20 @@ Focus only on explaining terms, the verification process, and platform features.
 Keep responses brief and to the point, unless the user requests a detailed explanation.
 Use analogies or examples only if they make the concept simpler to understand.
 If unsure about something, say you don’t have information on that topic.
-
-Core Features:
-Summarization Mode – When a document is uploaded, generate a plain-language summary (like a "TL;DR").
-Highlight & Explain Terms – Detect and explain complex terms in simple words.
-Step-by-Step Verification Flow – Guide users through uploading, checking authenticity, and reviewing flagged issues.
-Glossary on Demand – Provide simple definitions with examples when asked about legal or technical terms.
-Confidence Disclaimer – End responses with:
-“This is general information, not legal advice. Please consult a lawyer for personal guidance.”
-Multi-Mode Replies – Short answer by default, with options for "Explain in detail" or "Summarize."
-Direct Verification Redirect – If a user asks for verification, immediately guide them to the verification page link.
-
-Extra Features:
-Smart Comparison Tool – Compare two documents and highlight differences in plain language.
-Risk & Complexity Tags – Assign readability scores and flag risky terms like "non-refundable" or "waiver of rights."
-Interactive Walkthrough Mode – Walk through a document clause by clause in plain English; user can type "Next" to continue.
-Search Within Document – Answer queries about specific clauses (e.g., “What does Clause 7 say?”).
-Multilingual Support – Explain terms and summaries in the user’s preferred language.
-Document Type Detector – Identify the type of document (contract, rental agreement, affidavit, etc.).
-Voice Mode – Allow users to interact through speech-to-text and text-to-speech for accessibility.
-Privacy & Security Notice – Assure users that documents are processed securely and not stored after verification.
-FAQ Auto-Suggest – Suggest relevant questions proactively (e.g., “Do you want me to explain the payment terms?”).
-Learning Mode (Flashcards/Quiz) – Teach users common legal terms interactively for educational value.
-
+Never share personal opinions or speculate on legal matters.
+Always prioritize user safety and privacy. Do not ask for or store sensitive personal information.
+Maintain a friendly and approachable tone, but avoid slang or overly casual language.
+If a user query matches a keyword related to official government services, append a relevant government link to your response.
+Examples:
 """
+
+def get_gov_link(user_query: str):
+    """Return an official government link if the query matches a keyword."""
+    user_query = user_query.lower()
+    for keyword, link in gov_links.items():
+        if keyword in user_query:
+            return f"✅ Official resource: {link}"
+    return None
 
 def generate_response(message: str, history: List[Dict[str, Any]]) -> ChatResponse:
     """
@@ -100,9 +101,14 @@ def generate_response(message: str, history: List[Dict[str, Any]]) -> ChatRespon
             {"role": msg.role, "parts": [{"text": part.text} for part in msg.parts]}
             for msg in updated_history
         ]
+          # ✅ Append gov link if relevant
+        gov_link = get_gov_link(message)
+        reply_text = response.text
+        if gov_link:
+            reply_text = f"{reply_text}\n\n{gov_link}"
 
         return ChatResponse(
-            reply=response.text,
+            reply=reply_text,
             history=serializable_history
         )
 
@@ -119,3 +125,30 @@ def generate_response(message: str, history: List[Dict[str, Any]]) -> ChatRespon
             reply="I'm sorry, but I encountered an error while processing your request. Please try again later.",
             history=error_history
         )
+
+
+"""
+
+Core Features:
+Summarization Mode – When a document is uploaded, generate a plain-language summary (like a "TL;DR").
+Highlight & Explain Terms – Detect and explain complex terms in simple words.
+Step-by-Step Verification Flow – Guide users through uploading, checking authenticity, and reviewing flagged issues.
+Glossary on Demand – Provide simple definitions with examples when asked about legal or technical terms.
+Confidence Disclaimer – End responses with:
+“This is general information, not legal advice. Please consult a lawyer for personal guidance.”
+Multi-Mode Replies – Short answer by default, with options for "Explain in detail" or "Summarize."
+Direct Verification Redirect – If a user asks for verification, immediately guide them to the verification page link.
+
+Extra Features:
+Smart Comparison Tool – Compare two documents and highlight differences in plain language.
+Risk & Complexity Tags – Assign readability scores and flag risky terms like "non-refundable" or "waiver of rights."
+Interactive Walkthrough Mode – Walk through a document clause by clause in plain English; user can type "Next" to continue.
+Search Within Document – Answer queries about specific clauses (e.g., “What does Clause 7 say?”).
+Multilingual Support – Explain terms and summaries in the user’s preferred language.
+Document Type Detector – Identify the type of document (contract, rental agreement, affidavit, etc.).
+Voice Mode – Allow users to interact through speech-to-text and text-to-speech for accessibility.
+Privacy & Security Notice – Assure users that documents are processed securely and not stored after verification.
+FAQ Auto-Suggest – Suggest relevant questions proactively (e.g., “Do you want me to explain the payment terms?”).
+Learning Mode (Flashcards/Quiz) – Teach users common legal terms interactively for educational value.
+
+"""
