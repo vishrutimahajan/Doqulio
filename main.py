@@ -8,7 +8,7 @@ from features.chat.router import router as chat_router
 from features.verification.router import router as verification_router
 
 from features.documents import router as risk_router
-app = FastAPI(title="Healthcare Chatbot API")
+app = FastAPI(title="Docqulio Chatbot API")
 
 # Register routers
 app.include_router(auth_router.router)
