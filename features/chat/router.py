@@ -1,10 +1,9 @@
 # router.py
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from . import schemas
 from . import service
-
-# Create an API router
+from google.generativeai import types   
 router = APIRouter(
     prefix="/api",
     tags=["Chatbot"]
@@ -12,41 +11,49 @@ router = APIRouter(
 
 @router.post("/chat", response_model=schemas.ChatResponse)
 async def handle_chat_request(
-    prompt: str = Form(
-        ...,
-        description="The user's question or prompt for the chatbot."
-    ),
+    prompt: str = Form(..., description="The user's question or prompt for the chatbot."),
     file: UploadFile | None = File(
         default=None,
         description="Optional: Upload a document (PDF, DOCX, image) for context-aware answers."
     )
 ):
-    """
-    This endpoint powers the Doqulio chatbot.
-
-    It can handle two types of requests:
-    1.  **General Question:** Provide a `prompt` without a `file`.
-    2.  **Document-based Question:** Provide both a `prompt` and a `file`. The chatbot will use the file's content as a reference to answer the prompt.
-    """
     document_text = None
+    file_data = None
+    mime_type = None
 
-    # Step 1: If a file is uploaded, extract its text content
     if file:
-        try:
-            document_text = service.extract_text_from_file(file)
-            if not document_text or document_text.isspace():
+        mime_type = file.content_type
+        # For DOCX, we still need to extract the text manually
+        if mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
+            try:
+                document_text = service.extract_text_from_file(file)
+            except Exception as e:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Could not extract any text from the uploaded file. It might be empty or unreadable."
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to process DOCX file: {str(e)}"
                 )
-        except HTTPException as e:
-            # Re-raise exceptions from the service layer to the client
-            raise e
+        # For images and PDFs, we read the raw file data
+        elif mime_type in ["image/jpeg", "image/png", "application/pdf"]:
+            file_data = await file.read()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type: {mime_type}. Please upload a PDF, DOCX, or image file."
+            )
 
-    # Step 2: Generate a response using the prompt and the (optional) extracted text
+        if not document_text and not file_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not extract any data from the uploaded file. It might be empty or unreadable."
+            )
+
     try:
-        answer = service.generate_chat_response(prompt=prompt, document_text=document_text)
+        answer = service.generate_chat_response(
+            prompt=prompt,
+            document_text=document_text,
+            file_data=file_data,
+            mime_type=mime_type
+        )
         return schemas.ChatResponse(answer=answer)
     except HTTPException as e:
-        # Re-raise exceptions from the service layer to the client
         raise e
