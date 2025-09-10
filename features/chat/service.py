@@ -13,7 +13,7 @@ from fastapi import HTTPException, UploadFile, status
 # Configure the Gemini API with the key from environment variables
 try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    model = genai.GenerativeModel('gemini-1.5-flash')
 except KeyError:
     raise RuntimeError("GEMINI_API_KEY environment variable not set.")
 
