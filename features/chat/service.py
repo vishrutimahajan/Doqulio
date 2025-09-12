@@ -1,106 +1,105 @@
-# service.py
-
 import os
 import io
-from PIL import Image
-import pytesseract
 import docx
-from pypdf import PdfReader
 import google.generativeai as genai
 from fastapi import HTTPException, UploadFile, status
+from PIL import Image
+from pypdf import PdfReader
+from google.cloud import translate_v2 as translate # --- ADDED FOR TRANSLATION ---
 
 # --- AI Configuration ---
-# Configure the Gemini API with the key from environment variables
 try:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
     model = genai.GenerativeModel('gemini-1.5-flash')
 except KeyError:
     raise RuntimeError("GEMINI_API_KEY environment variable not set.")
 
+# --- ADDED FOR TRANSLATION: Initialize the Translation client ---
+try:
+    translate_client = translate.Client()
+except Exception as e:
+    # This will catch errors if authentication (e.g., GOOGLE_APPLICATION_CREDENTIALS) is not set up correctly.
+    raise RuntimeError(f"Failed to initialize Google Translate client. Ensure authentication is configured. Error: {str(e)}")
+
 
 def extract_text_from_file(file: UploadFile) -> str:
     """
-    Extracts text content from an uploaded file (PDF, DOCX, or Image).
+    Extracts text content from a DOCX file.
+    This function is only used for DOCX as Gemini does not natively
+    support it via direct file upload.
     """
-    content_type = file.content_type
-    file_bytes = file.file.read()
-
     try:
-        if content_type == "application/pdf":
-            # Process PDF file
-            reader = PdfReader(io.BytesIO(file_bytes))
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-            return text
-
-        elif content_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
-            # Process DOCX file
-            doc = docx.Document(io.BytesIO(file_bytes))
-            text = "\n".join([para.text for para in doc.paragraphs])
-            return text
-
-        elif content_type in ["image/jpeg", "image/png"]:
-            # Process Image file using OCR
-            image = Image.open(io.BytesIO(file_bytes))
-            text = pytesseract.image_to_string(image)
-            return text
-
-        else:
-            # Handle unsupported file types
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported file type: {content_type}. Please upload a PDF, DOCX, or image file."
-            )
+        # Reset file pointer to the beginning before reading
+        file.file.seek(0)
+        doc = docx.Document(io.BytesIO(file.file.read()))
+        # Reset file pointer again in case it needs to be read again
+        file.file.seek(0)
+        return "\n".join([para.text for para in doc.paragraphs])
     except Exception as e:
-        # Catch potential processing errors
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process the uploaded file: {str(e)}"
+            detail=f"Failed to process DOCX file: {str(e)}"
         )
 
+# --- ADDED FOR TRANSLATION: New function to handle text translation ---
+def translate_text(text: str, target_language: str) -> str:
+    """
+    Translates text into the target language using Google Cloud Translation API.
+    """
+    if not text or not target_language:
+        return text
+    try:
+        result = translate_client.translate(text, target_language=target_language)
+        return result['translatedText']
+    except Exception as e:
+        # If translation fails, return the original text instead of crashing.
+        # You might want to log this error for debugging.
+        print(f"Warning: Translation to '{target_language}' failed: {str(e)}")
+        return text
 
-def generate_chat_response(prompt: str, document_text: str | None = None) -> str:
+# --- MODIFIED: Added 'target_language' parameter ---
+def generate_chat_response(prompt: str, document_text: str | None = None, file_data: bytes | None = None, mime_type: str | None = None, target_language: str | None = None) -> str:
     """
-    Generates a response from the Gemini AI based on the user prompt and optional document context.
+    Generates a response from the Gemini AI based on the user prompt and optional context.
+    Optionally translates the response to the target language.
     """
-    # System prompt to define the chatbot's persona and task
     system_prompt = """
     You are 'Doqulio', a friendly and helpful AI legal assistant. Your main goal is to demystify complex legal jargon for users.
-
-    Follow these rules:
-    1.  **Prioritize Clarity:** Explain legal terms and clauses in simple, easy-to-understand language.
-    2.  **Be Concise First:** Start with a summary or key points. Use bullet points for readability.
-    3.  **Offer Depth:** End your concise explanation by stating that you can provide a more detailed explanation if the user asks for it.
-    4.  **Use Context When Provided:** If document text is included, base your answers primarily on that text.
-    5.  **General Knowledge for General Questions:** If no document is provided, answer general legal questions to the best of your ability.
-    6.  **Disclaimer:** Always include a brief, friendly disclaimer at the end of your response, like: "Remember, I'm an AI assistant, not a lawyer. It's always a good idea to consult with a qualified legal professional for serious matters."
+    All the legal documents that will be uploaded, I want you to summarise them carefully .
+    Generate a detailed report about the key findings for example if I upload a rental agreement then
+    the findings would be the owners name , borrower name, date of commencement, date of agreement expiry ,etc.
+    Also validate the authenticity of the documents, present how authentic this document is in percentage.
+    Make sure you pay attention to all the terms and conditions .
+    If there is anything that is needed to b paid attention make a separate note of it in the report
     """
 
-    # Combine the system prompt, document context (if any), and user question
+    contents = [system_prompt]
+
     if document_text:
-        full_prompt = f"""
-        {system_prompt}
+        contents.append(f"--- DOCUMENT CONTEXT ---\n{document_text}\n--- END OF DOCUMENT ---\n")
+        
+    if file_data and mime_type:
+        if "image" in mime_type:
+            contents.append(Image.open(io.BytesIO(file_data)))
+        elif "pdf" in mime_type:
+            contents.append({
+                'mime_type': mime_type,
+                'data': file_data
+            })
 
-        --- DOCUMENT CONTEXT ---
-        {document_text}
-        --- END OF DOCUMENT ---
-
-        Based on the document provided, please answer the following user question: "{prompt}"
-        """
-    else:
-        full_prompt = f"""
-        {system_prompt}
-
-        Please answer the following general question: "{prompt}"
-        """
+    contents.append(prompt)
 
     try:
-        # Generate content using the AI model
-        response = model.generate_content(full_prompt)
-        return response.text
+        response = model.generate_content(contents)
+        generated_text = response.text
+
+        # --- ADDED FOR TRANSLATION: Translate the response if a language is specified ---
+        if target_language:
+            return translate_text(generated_text, target_language)
+        
+        return generated_text
+    
     except Exception as e:
-        # Handle potential API errors
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Error communicating with the AI service: {str(e)}"

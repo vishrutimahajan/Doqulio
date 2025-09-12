@@ -1,52 +1,57 @@
 # router.py
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from . import schemas
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from . import service
+from . import schemas
 
-# Create an API router
+# Create a new router object
 router = APIRouter(
-    prefix="/api",
-    tags=["Chatbot"]
+    tags=["Chat"],
 )
 
-@router.post("/chat", response_model=schemas.ChatResponse)
-async def handle_chat_request(
-    prompt: str = Form(
-        ...,
-        description="The user's question or prompt for the chatbot."
-    ),
-    file: UploadFile | None = File(
-        default=None,
-        description="Optional: Upload a document (PDF, DOCX, image) for context-aware answers."
-    )
+@router.post("/analyze-document", response_model=schemas.ChatResponse)
+async def analyze_document_and_chat(
+    file: UploadFile = File(..., description="The document to be analyzed (PDF, DOCX, or Image)."),
+    prompt: str = Form(..., description="Your question or prompt about the document."),
+    # This part remains the same, but will now generate a dropdown with full names
+    lang: schemas.Language | None = Form(None, description="Select a language to translate the response.")
 ):
     """
-    This endpoint powers the Doqulio chatbot.
-
-    It can handle two types of requests:
-    1.  **General Question:** Provide a `prompt` without a `file`.
-    2.  **Document-based Question:** Provide both a `prompt` and a `file`. The chatbot will use the file's content as a reference to answer the prompt.
+    This endpoint analyzes an uploaded document and generates a response based on a user's prompt.
+    
+    - Supports **PDF**, **DOCX**, and **Image** files.
+    - Optionally translates the AI's response into a specified language.
     """
-    document_text = None
+    
+    document_text: str | None = None
+    file_data: bytes | None = None
+    
+    file_bytes = await file.read()
+    
+    content_type = file.content_type
+    
+    if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        document_text = service.extract_text_from_file(file)
+    elif content_type == "application/pdf" or content_type.startswith("image/"):
+        file_data = file_bytes
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type: {content_type}. Please upload a PDF, DOCX, or Image file."
+        )
 
-    # Step 1: If a file is uploaded, extract its text content
-    if file:
-        try:
-            document_text = service.extract_text_from_file(file)
-            if not document_text or document_text.isspace():
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not extract any text from the uploaded file. It might be empty or unreadable."
-                )
-        except HTTPException as e:
-            # Re-raise exceptions from the service layer to the client
-            raise e
+    # --- MODIFIED: Look up the language code from the map before calling the service ---
+    target_language_code = None
+    if lang:
+        # Get the short code (e.g., "hi") from the selected enum member (e.g., Language.HINDI)
+        target_language_code = schemas.LANGUAGE_CODE_MAP.get(lang)
 
-    # Step 2: Generate a response using the prompt and the (optional) extracted text
-    try:
-        answer = service.generate_chat_response(prompt=prompt, document_text=document_text)
-        return schemas.ChatResponse(answer=answer)
-    except HTTPException as e:
-        # Re-raise exceptions from the service layer to the client
-        raise e
+    response_text = service.generate_chat_response(
+        prompt=prompt,
+        document_text=document_text,
+        file_data=file_data,
+        mime_type=content_type,
+        target_language=target_language_code # Pass the correct short code
+    )
+    
+    return schemas.ChatResponse(response=response_text)
