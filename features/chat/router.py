@@ -1,59 +1,57 @@
 # router.py
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
-from . import schemas
 from . import service
-from google.generativeai import types   
+from . import schemas
+
+# Create a new router object
 router = APIRouter(
-    prefix="/api",
-    tags=["Chatbot"]
+    tags=["Chat"],
 )
 
-@router.post("/chat", response_model=schemas.ChatResponse)
-async def handle_chat_request(
-    prompt: str = Form(..., description="The user's question or prompt for the chatbot."),
-    file: UploadFile | None = File(
-        default=None,
-        description="Optional: Upload a document (PDF, DOCX, image) for context-aware answers."
-    )
+@router.post("/analyze-document", response_model=schemas.ChatResponse)
+async def analyze_document_and_chat(
+    file: UploadFile = File(..., description="The document to be analyzed (PDF, DOCX, or Image)."),
+    prompt: str = Form(..., description="Your question or prompt about the document."),
+    # This part remains the same, but will now generate a dropdown with full names
+    lang: schemas.Language | None = Form(None, description="Select a language to translate the response.")
 ):
-    document_text = None
-    file_data = None
-    mime_type = None
-
-    if file:
-        mime_type = file.content_type
-        # For DOCX, we still need to extract the text manually
-        if mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
-            try:
-                document_text = service.extract_text_from_file(file)
-            except Exception as e:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to process DOCX file: {str(e)}"
-                )
-        # For images and PDFs, we read the raw file data
-        elif mime_type in ["image/jpeg", "image/png", "application/pdf"]:
-            file_data = await file.read()
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported file type: {mime_type}. Please upload a PDF, DOCX, or image file."
-            )
-
-        if not document_text and not file_data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Could not extract any data from the uploaded file. It might be empty or unreadable."
-            )
-
-    try:
-        answer = service.generate_chat_response(
-            prompt=prompt,
-            document_text=document_text,
-            file_data=file_data,
-            mime_type=mime_type
+    """
+    This endpoint analyzes an uploaded document and generates a response based on a user's prompt.
+    
+    - Supports **PDF**, **DOCX**, and **Image** files.
+    - Optionally translates the AI's response into a specified language.
+    """
+    
+    document_text: str | None = None
+    file_data: bytes | None = None
+    
+    file_bytes = await file.read()
+    
+    content_type = file.content_type
+    
+    if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        document_text = service.extract_text_from_file(file)
+    elif content_type == "application/pdf" or content_type.startswith("image/"):
+        file_data = file_bytes
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type: {content_type}. Please upload a PDF, DOCX, or Image file."
         )
-        return schemas.ChatResponse(answer=answer)
-    except HTTPException as e:
-        raise e
+
+    # --- MODIFIED: Look up the language code from the map before calling the service ---
+    target_language_code = None
+    if lang:
+        # Get the short code (e.g., "hi") from the selected enum member (e.g., Language.HINDI)
+        target_language_code = schemas.LANGUAGE_CODE_MAP.get(lang)
+
+    response_text = service.generate_chat_response(
+        prompt=prompt,
+        document_text=document_text,
+        file_data=file_data,
+        mime_type=content_type,
+        target_language=target_language_code # Pass the correct short code
+    )
+    
+    return schemas.ChatResponse(response=response_text)

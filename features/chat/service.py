@@ -1,5 +1,3 @@
-# service.py
-
 import os
 import io
 import docx
@@ -7,6 +5,7 @@ import google.generativeai as genai
 from fastapi import HTTPException, UploadFile, status
 from PIL import Image
 from pypdf import PdfReader
+from google.cloud import translate_v2 as translate # --- ADDED FOR TRANSLATION ---
 
 # --- AI Configuration ---
 try:
@@ -15,6 +14,14 @@ try:
 except KeyError:
     raise RuntimeError("GEMINI_API_KEY environment variable not set.")
 
+# --- ADDED FOR TRANSLATION: Initialize the Translation client ---
+try:
+    translate_client = translate.Client()
+except Exception as e:
+    # This will catch errors if authentication (e.g., GOOGLE_APPLICATION_CREDENTIALS) is not set up correctly.
+    raise RuntimeError(f"Failed to initialize Google Translate client. Ensure authentication is configured. Error: {str(e)}")
+
+
 def extract_text_from_file(file: UploadFile) -> str:
     """
     Extracts text content from a DOCX file.
@@ -22,7 +29,11 @@ def extract_text_from_file(file: UploadFile) -> str:
     support it via direct file upload.
     """
     try:
+        # Reset file pointer to the beginning before reading
+        file.file.seek(0)
         doc = docx.Document(io.BytesIO(file.file.read()))
+        # Reset file pointer again in case it needs to be read again
+        file.file.seek(0)
         return "\n".join([para.text for para in doc.paragraphs])
     except Exception as e:
         raise HTTPException(
@@ -30,9 +41,27 @@ def extract_text_from_file(file: UploadFile) -> str:
             detail=f"Failed to process DOCX file: {str(e)}"
         )
 
-def generate_chat_response(prompt: str, document_text: str | None = None, file_data: bytes | None = None, mime_type: str | None = None) -> str:
+# --- ADDED FOR TRANSLATION: New function to handle text translation ---
+def translate_text(text: str, target_language: str) -> str:
     """
-    Generates a response from the Gemini AI based on the user prompt and optional context (document or image).
+    Translates text into the target language using Google Cloud Translation API.
+    """
+    if not text or not target_language:
+        return text
+    try:
+        result = translate_client.translate(text, target_language=target_language)
+        return result['translatedText']
+    except Exception as e:
+        # If translation fails, return the original text instead of crashing.
+        # You might want to log this error for debugging.
+        print(f"Warning: Translation to '{target_language}' failed: {str(e)}")
+        return text
+
+# --- MODIFIED: Added 'target_language' parameter ---
+def generate_chat_response(prompt: str, document_text: str | None = None, file_data: bytes | None = None, mime_type: str | None = None, target_language: str | None = None) -> str:
+    """
+    Generates a response from the Gemini AI based on the user prompt and optional context.
+    Optionally translates the response to the target language.
     """
     system_prompt = """
     You are 'Doqulio', a friendly and helpful AI legal assistant. Your main goal is to demystify complex legal jargon for users.
@@ -53,7 +82,6 @@ def generate_chat_response(prompt: str, document_text: str | None = None, file_d
         if "image" in mime_type:
             contents.append(Image.open(io.BytesIO(file_data)))
         elif "pdf" in mime_type:
-            # Pass PDF bytes directly as a dictionary with mime_type and data
             contents.append({
                 'mime_type': mime_type,
                 'data': file_data
@@ -63,7 +91,14 @@ def generate_chat_response(prompt: str, document_text: str | None = None, file_d
 
     try:
         response = model.generate_content(contents)
-        return response.text
+        generated_text = response.text
+
+        # --- ADDED FOR TRANSLATION: Translate the response if a language is specified ---
+        if target_language:
+            return translate_text(generated_text, target_language)
+        
+        return generated_text
+    
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
