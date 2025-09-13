@@ -1,57 +1,65 @@
-# router.py
-
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
-from . import service
-from . import schemas
+# Import schemas and the language map
+from . import service, schemas
 
-# Create a new router object
-router = APIRouter(
-    tags=["Chat"],
-)
+router = APIRouter()
 
-@router.post("/analyze-document", response_model=schemas.ChatResponse)
-async def analyze_document_and_chat(
-    file: UploadFile = File(..., description="The document to be analyzed (PDF, DOCX, or Image)."),
-    prompt: str = Form(..., description="Your question or prompt about the document."),
-    # This part remains the same, but will now generate a dropdown with full names
-    lang: schemas.Language | None = Form(None, description="Select a language to translate the response.")
+@router.post("/chat", response_model=schemas.ChatResponse)
+async def chat_endpoint(
+    prompt: str = Form(...),
+    # --- MODIFIED: Use the Language Enum for the parameter ---
+    # This creates a dropdown in the API docs.
+    target_language: schemas.Language | None = Form(None),
+    file: UploadFile | None = File(None)
 ):
     """
-    This endpoint analyzes an uploaded document and generates a response based on a user's prompt.
-    
-    - Supports **PDF**, **DOCX**, and **Image** files.
-    - Optionally translates the AI's response into a specified language.
+    Handles chat interactions. The user can submit a text prompt with or without a file.
     """
+    document_text = None
+    file_data = None
+    mime_type = None
     
-    document_text: str | None = None
-    file_data: bytes | None = None
-    
-    file_bytes = await file.read()
-    
-    content_type = file.content_type
-    
-    if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        document_text = service.extract_text_from_file(file)
-    elif content_type == "application/pdf" or content_type.startswith("image/"):
-        file_data = file_bytes
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file type: {content_type}. Please upload a PDF, DOCX, or Image file."
+    # --- ADDED: Convert the user-friendly language name to a two-letter code ---
+    language_code = None
+    if target_language:
+        # Look up the code (e.g., "Hindi" -> "hi") from the map in schemas.py
+        language_code = schemas.LANGUAGE_CODE_MAP.get(target_language)
+
+    if file:
+        allowed_mime_types = [
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document", # DOCX
+            "image/png",
+            "image/jpeg"
+        ]
+        if file.content_type not in allowed_mime_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type. Supported types are PDF, DOCX, PNG, JPEG."
+            )
+
+        mime_type = file.content_type
+        file_data = await file.read()
+
+        if file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            document_text = service.extract_text_from_file(file)
+            file_data = None
+            mime_type = None
+
+    try:
+        response_text = service.generate_chat_response(
+            prompt=prompt,
+            document_text=document_text,
+            file_data=file_data,
+            mime_type=mime_type,
+            # Pass the two-letter language code to the service function
+            target_language=language_code
         )
-
-    # --- MODIFIED: Look up the language code from the map before calling the service ---
-    target_language_code = None
-    if lang:
-        # Get the short code (e.g., "hi") from the selected enum member (e.g., Language.HINDI)
-        target_language_code = schemas.LANGUAGE_CODE_MAP.get(lang)
-
-    response_text = service.generate_chat_response(
-        prompt=prompt,
-        document_text=document_text,
-        file_data=file_data,
-        mime_type=content_type,
-        target_language=target_language_code # Pass the correct short code
-    )
-    
-    return schemas.ChatResponse(response=response_text)
+        return schemas.ChatResponse(response=response_text)
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )

@@ -1,12 +1,10 @@
-# schemas.py
-
 from pydantic import BaseModel
 from enum import Enum
 
-# --- MODIFIED: The Enum now holds the full, user-friendly names ---
+# The Enum holds the full, user-friendly names for the API docs
 class Language(str, Enum):
     """
-    An enumeration for supported languages. The values are now the full names
+    An enumeration for supported languages. The values are the full names
     which will be displayed in the API documentation's dropdown menu.
     """
     HINDI = "Hindi"
@@ -24,7 +22,7 @@ class Language(str, Enum):
     SANSKRIT = "Sanskrit"
     ENGLISH = "English"
 
-# --- ADDED: A mapping to get the API code from the full name ---
+# A mapping to get the API code from the full name
 LANGUAGE_CODE_MAP = {
     Language.HINDI: "hi",
     Language.TAMIL: "ta",
