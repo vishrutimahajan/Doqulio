@@ -1,14 +1,15 @@
-import re
 
-import datetime
+import datetime,re,pdfplumber
 from docx import Document
-import pdfplumber
 from firebase_admin import firestore
 from core.gcs import upload_file, download_file
 import google.generativeai as gemini
 from core.firebase import db  # <- import the already initialized db ///////
 from core.config import GEMINI_API_KEY
-
+from google.cloud import storage
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status 
+import tempfile
+import os
 # --- Patterns for redaction --- ########
 patterns = {
     "email": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
@@ -22,6 +23,12 @@ patterns = {
 
 db = firestore.client()
 gemini.api_key = ".."
+
+storage_client = storage.Client()
+BUCKET_NAME = "docquliobucket"
+
+# ... other functions ...
+
 
 
 def redact_text(text: str) -> str:
@@ -58,43 +65,73 @@ def parse_and_redact(local_path: str, mime_type: str) -> str:
     return redact_text(raw_text)
 
 
-def process_document(user_id: str, file, document_type: str, mime_type: str):
-    """
-    Upload file to GCS, generate AI summary, perform risk analysis,
-    and store metadata in Firestore.
-    """
-    filename = file.filename
+
+
+def upload_file_to_gcs(file_data: bytes, file_name: str, mime_type: str) -> str:
+    """Uploads a file to GCS and returns its public URL."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(file_name)
+        
+        blob.upload_from_string(file_data, content_type=mime_type)
+        
+        # Make the file publicly accessible
+        
+        return f"https://storage.googleapis.com/{BUCKET_NAME}/{file_name}"
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload file to cloud storage: {str(e)}"
+        )
+
+def download_file_from_gcs(blob_name: str, local_path: str):
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        blob.download_to_filename(local_path)
+        return local_path
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"GCS download failed: {str(e)}"
+        )
+def process_document(user_id: str, file_data: bytes, filename: str, document_type: str, mime_type: str):
     gcs_path = f"docs/{filename}"
 
     # 1️⃣ Upload file to GCS
-    gcs_url = upload_file(file.file, gcs_path)
+    gcs_url = upload_file_to_gcs(file_data, gcs_path, mime_type)
 
-    # 2️⃣ Save metadata in Firestore
+    # 2️⃣ Save initial metadata in Firestore
     doc_ref = db.collection("users").document(user_id).collection("documents").document()
     doc_ref.set({
         "filename": filename,
         "document_type": document_type,
+        "mime_type": mime_type,
         "gcs_url": gcs_url,
         "uploaded_at": datetime.datetime.utcnow(),
         "ai_summary": None,
         "risk_analysis": None
     })
 
-    # 3️⃣ Download file locally for AI processing
-    local_path = download_file(gcs_path)
+    # 3️⃣ Download file locally in a temp directory
+    temp_dir = tempfile.gettempdir()
+    local_path = os.path.join(temp_dir, filename)
+    download_file_from_gcs(gcs_path, local_path)
 
-    # 4️⃣ Extract + redact content
+    # 4️⃣ Extract and redact content
     content = extract_text_from_file(local_path, mime_type)
     redacted_content = redact_text(content)
 
     # 5️⃣ Generate AI summary
-    summary_response = gemini.GenerativeModel("gemini-2.0").generate_content(
+    model_summary = gemini.GenerativeModel("gemini-1.5-flash")
+    summary_response = model_summary.generate_content(
         f"Summarize this {document_type} document:\n{redacted_content}"
     )
     summary = summary_response.text.strip()
 
-    # 6️⃣ Risk analysis via AI
-    risk_response = gemini.GenerativeModel("gemini-1.5-pro").generate_content(
+    # 6️⃣ Risk analysis
+    model_risk = gemini.GenerativeModel("gemini-1.5-flash")
+    risk_response = model_risk.generate_content(
         f"Analyze legal risks in this {document_type} document:\n{redacted_content}"
     )
     risk_result = {
@@ -103,25 +140,17 @@ def process_document(user_id: str, file, document_type: str, mime_type: str):
         "recommendations": ["Review highlighted issues"]
     }
 
-    # 7️⃣ Update Firestore document
+    # 7️⃣ Update Firestore
     doc_ref.update({
         "ai_summary": summary,
         "summary_generated_at": datetime.datetime.utcnow(),
         "risk_analysis": risk_result
     })
 
+    # 8️⃣ Return results
     return {
         "doc_id": doc_ref.id,
         "gcs_url": gcs_url,
         "summary": summary,
         "risk_analysis": risk_result
     }
-def check_risk(text: str):
-    prompt = f"Identify legal and compliance risks in the following document:\n\n{text}"
-    return GEMINI_API_KEY(prompt)
-
-def summarize_document(text: str):
-    prompt = f"Summarize the following document:\n\n{text}"
-    return GEMINI_API_KEY(prompt)
-
-#####

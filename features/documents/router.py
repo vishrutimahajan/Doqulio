@@ -1,17 +1,19 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from PyPDF2 import PdfReader
-import requests
 from core.config import GEMINI_API_KEY
-from .service import parse_and_redact
+from .service import parse_and_redact, process_document, upload_file_to_gcs
+import requests
+import tempfile
+import os
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
-
 # -------------------- Helpers --------------------
-def read_pdf(file) -> str:
-    """Extract text from uploaded PDF file"""
+def read_pdf(file_path: str) -> str:
+    """Extract text from a PDF file"""
     try:
-        reader = PdfReader(file)
+        reader = PdfReader(file_path)
         text = ""
         for page in reader.pages:
             page_text = page.extract_text()
@@ -26,10 +28,7 @@ def call_gemini(prompt: str) -> str:
     """Send prompt to Gemini API"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
-
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
+    data = {"contents": [{"parts": [{"text": prompt}]}]}
 
     response = requests.post(url, headers=headers, json=data)
     if response.status_code != 200:
@@ -46,13 +45,13 @@ def call_gemini(prompt: str) -> str:
 
 def summarize_document(text: str) -> str:
     prompt = f"""
-Summarize the following legal document focusing only on:
+Summarize the following legal document focusing on:
 
-1. Key parties involved  
-2. Important dates and deadlines  
-3. Main obligations of each party  
-4. Risks and liabilities  
-5. Termination and renewal clauses  
+1. Key parties
+2. Important dates and deadlines
+3. Main obligations
+4. Risks and liabilities
+5. Termination/renewal clauses
 
 Document:
 {text}
@@ -62,8 +61,7 @@ Document:
 
 def check_risk(text: str) -> str:
     prompt = f"""
-Identify potential legal, compliance, or financial risks in the following document.
-Be specific and concise:
+Identify potential legal, compliance, or financial risks in the following document. Be specific:
 
 {text}
 """
@@ -75,7 +73,17 @@ Be specific and concise:
 async def redact_document(file: UploadFile = File(...), document_type: str = Form(...)):
     """Redacts sensitive info and returns clean text"""
     try:
-        redacted_text = parse_and_redact(file.file, file.content_type)
+        # Save uploaded file to temp file
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(await file.read())
+            local_path = tmp.name
+
+        redacted_text = parse_and_redact(local_path, file.content_type)
+
+        # Cleanup
+        os.remove(local_path)
+
         return {
             "filename": file.filename,
             "document_type": document_type,
@@ -86,30 +94,54 @@ async def redact_document(file: UploadFile = File(...), document_type: str = For
 
 
 @router.post("/analyze")
-async def analyze_document(file: UploadFile = File(...), document_type: str = Form(...)):
-    """Extracts text, summarizes, and checks risks"""
-    if document_type.lower() != "pdf":
-        return {"error": "Only PDF files are supported for now"}
+async def analyze_document(
+    file: UploadFile = File(...),
+    document_type: str = Form(...),
+    user_id: str = Form(...)
+):
+    """Upload to GCS, redact, summarize, risk analysis, store metadata"""
+    if file.content_type not in ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported file type. Only PDF, DOCX, and TXT are supported."
+        )
 
     try:
-        # Step 1: Read PDF
-        text = read_pdf(file.file)
+        # Save uploaded file to temp file
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            file_bytes = await file.read()
+            tmp.write(file_bytes)
+            local_path = tmp.name
 
-        # Step 2: Redact
-        redacted_text = parse_and_redact(file.file, file.content_type)
+        # Upload to GCS
+        gcs_path = f"docs/{file.filename}"
+        gcs_url = upload_file_to_gcs(file_bytes, gcs_path, file.content_type)
 
-        # Step 3: Summarize
+        # Process & save metadata
+        result = process_document(user_id, file_bytes, file.filename, document_type, file.content_type)
+
+        # Extract text and redact
+        text = read_pdf(local_path)
+        redacted_text = parse_and_redact(local_path, file.content_type)
+
+        # Summarize & risk analysis
         summary = summarize_document(text)
-
-        # Step 4: Risk Analysis
         risks = check_risk(text)
+
+        # Cleanup
+        os.remove(local_path)
 
         return {
             "filename": file.filename,
             "document_type": document_type,
-            "summary": summary,
-            "risks": risks,
+            "mime_type": file.content_type,
             "redacted_text": redacted_text,
+            "summary": summary,
+            "risk_analysis": risks,
+            "gcs_url": gcs_url,
+            "uploaded_at": datetime.utcnow(),
+            "ai_summary": summary
         }
 
     except Exception as e:
