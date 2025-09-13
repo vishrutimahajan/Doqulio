@@ -1,67 +1,86 @@
+# router.py
+
+import logging
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from .schemas import VerificationReport
-from .service import verification_service # Import the service instance
+# Import the service and schemas
+from features.verification.service import verification_service
+from features.verification.schemas import VerificationReport, ReportLanguage
 
-# Create a new router
+
+# --- NEW: Mapping from full language name to ISO code ---
+LANGUAGE_CODE_MAP = {
+    "English": "en",
+    "Hindi": "hi",
+    "Bengali": "bn",
+    "Marathi": "mr",
+    "Telugu": "te",
+    "Tamil": "ta",
+    "Gujarati": "gu",
+    "Kannada": "kn",
+    "Malayalam": "ml",
+    "Punjabi": "pa",
+}
+
+
 router = APIRouter(
     prefix="/documents",
     tags=["Document Verification"]
 )
 
-@router.post("/verify", response_model=VerificationReport)
+@router.post(
+    "/verify",
+    summary="Verify a document and get a translated PDF report",
+    description="Upload a document and select a regional language for the analysis report from the dropdown menu. "
+)
 async def verify_document_endpoint(
-    file: UploadFile = File(..., description="The document (image or PDF) to verify."),
-    description: str = Form(..., description="A brief description of what the document is (e.g., 'This is a rental agreement from May').")
+    file: UploadFile = File(..., description="The document file to be verified (PDF, JPG, PNG)."),
+    description: str = Form(
+        ..., 
+        description="A short description of what the document is supposed to be (e.g., 'An invoice from ACME Corp')."
+    ),
+    # --- MODIFIED: The parameter now uses the Enum to create a dropdown ---
+    output_language: ReportLanguage = Form(
+        ReportLanguage.ENGLISH, # Default value
+        description="Select the language for the final analysis report."
+    )
 ):
     """
-    Verifies a document by analyzing its text content and returns a JSON report.
+    Handles file upload, calls the verification service with a target language from the dropdown, and returns a PDF report.
     """
-    supported_types = ["image/jpeg", "image/png", "application/pdf"]
-    if file.content_type not in supported_types:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"Unsupported file type. Please upload a JPEG, PNG, or PDF."
-        )
-    
     try:
+        # --- MODIFIED: Convert the full language name to its ISO code ---
+        language_code = LANGUAGE_CODE_MAP[output_language.value]
+        
+        logging.info(f"Received request for document: {file.filename}. Report language: {output_language.value} ({language_code})")
+        
         file_content = await file.read()
-        report = verification_service.verify_document(
+
+        # Perform the verification, passing the ISO language code to the service
+        report_data: VerificationReport = verification_service.verify_document(
             file_content=file_content,
             filename=file.filename,
-            description=description
+            description=description,
+            output_language=language_code
         )
-        return report
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred: {str(e)}"
+        
+        pdf_buffer = verification_service.generate_pdf_report(report_data)
+        
+        safe_filename = "".join(c for c in file.filename if c.isalnum() or c in ('.', '_')).rstrip()
+        report_filename = f"verification_report_{language_code}_{safe_filename}.pdf"
+
+        logging.info(f"Successfully generated '{language_code}' report for {file.filename}.")
+
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={report_filename}"}
         )
 
-# --- NEW: Endpoint to generate and download a PDF report ---
-@router.post("/download-report", response_class=StreamingResponse)
-async def download_report_endpoint(report: VerificationReport):
-    """
-    Generates a downloadable PDF report from a verification result.
-
-    **How to use:**
-    1. First, get a successful JSON response from the `/verify` endpoint.
-    2. Then, send that entire JSON object as the body of this request.
-    """
-    try:
-        # Generate the PDF using the service
-        pdf_buffer = verification_service.generate_pdf_report(report)
-        
-        # Create headers to prompt a download
-        headers = {
-            'Content-Disposition': f'attachment; filename="verification_report_{report.filename}.pdf"'
-        }
-        
-        # Stream the PDF back to the client
-        return StreamingResponse(pdf_buffer, media_type="application/pdf", headers=headers)
     except Exception as e:
+        logging.error(f"An unexpected error occurred during document verification for {file.filename}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate PDF report: {str(e)}"
+            detail=f"An internal error occurred while processing the document. Details: {str(e)}"
         )
