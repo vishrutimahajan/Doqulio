@@ -115,7 +115,7 @@ async def analyze_document(
             local_path = tmp.name
 
         # Upload to GCS
-        gcs_path = f"docs/{file.filename}"
+        gcs_path = f"docs/{user_id}/{file.filename}"
         gcs_url = upload_file_to_gcs(file_bytes, gcs_path, file.content_type)
 
         # Process & save metadata

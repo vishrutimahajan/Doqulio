@@ -8,7 +8,6 @@ pydantic
 httpx
 aiofiles
 python-dotenv
-
 pytest
 python-docx
 google-cloud-storage
@@ -24,5 +23,8 @@ pdfPlumber
 google.generativeai
 PyMuPDF pilllow
 fitz
+google-translate
+langdetect
+
 
 

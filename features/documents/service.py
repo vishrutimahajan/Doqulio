@@ -96,7 +96,7 @@ def download_file_from_gcs(blob_name: str, local_path: str):
             detail=f"GCS download failed: {str(e)}"
         )
 def process_document(user_id: str, file_data: bytes, filename: str, document_type: str, mime_type: str):
-    gcs_path = f"docs/{filename}"
+    gcs_path = f"docs/{user_id}/{filename}"
 
     # 1️⃣ Upload file to GCS
     gcs_url = upload_file_to_gcs(file_data, gcs_path, mime_type)
