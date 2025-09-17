@@ -1,28 +1,26 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
-# Import schemas and the language map
 from . import service, schemas
 
 router = APIRouter()
 
 @router.post("/chat", response_model=schemas.ChatResponse)
 async def chat_endpoint(
+    user_id: str = Form(...),   # ✅ NEW: Accept user_id
     prompt: str = Form(...),
-    # --- MODIFIED: Use the Language Enum for the parameter ---
-    # This creates a dropdown in the API docs.
     target_language: schemas.Language | None = Form(None),
     file: UploadFile | None = File(None)
 ):
     """
     Handles chat interactions. The user can submit a text prompt with or without a file.
+    Files are stored in GCS under docs/{user_id}/{filename}.
     """
     document_text = None
     file_data = None
     mime_type = None
-    
-    # --- ADDED: Convert the user-friendly language name to a two-letter code ---
+
+    # --- Convert the user-friendly language name to a two-letter code ---
     language_code = None
     if target_language:
-        # Look up the code (e.g., "Hindi" -> "hi") from the map in schemas.py
         language_code = schemas.LANGUAGE_CODE_MAP.get(target_language)
 
     if file:
@@ -35,13 +33,17 @@ async def chat_endpoint(
         if file.content_type not in allowed_mime_types:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported file type. Supported types are PDF, DOCX, PNG, JPEG."
+                detail="Unsupported file type. Supported types are PDF, DOCX, PNG, JPEG."
             )
 
         mime_type = file.content_type
         file_data = await file.read()
 
+        # ✅ Store file into GCS under docs/{user_id}/{filename}
+        gcs_url = service.upload_file_to_gcs(user_id, file.filename, file_data, mime_type)
+
         if file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            # Extract text for AI
             document_text = service.extract_text_from_file(file)
             file_data = None
             mime_type = None
@@ -52,7 +54,6 @@ async def chat_endpoint(
             document_text=document_text,
             file_data=file_data,
             mime_type=mime_type,
-            # Pass the two-letter language code to the service function
             target_language=language_code
         )
         return schemas.ChatResponse(response=response_text)
