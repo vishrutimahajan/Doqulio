@@ -44,27 +44,32 @@ async def verify_document_endpoint(
     output_language: ReportLanguage = Form(
         ReportLanguage.ENGLISH, # Default value
         description="Select the language for the final analysis report."
-    )
+    ),
+        user_id: str = Form(..., description="Firebase user ID for organizing docs in GCS")
+
 ):
     """
     Handles file upload, calls the verification service with a target language from the dropdown, and returns a PDF report.
+        - Stores only the redacted file in GCS: docs/{user_id}/{filename}.txt
+        - Returns the PDF report as a downloadable file.
+        - Logs key events and errors for monitoring.
     """
     try:
-        # --- MODIFIED: Convert the full language name to its ISO code ---
         language_code = LANGUAGE_CODE_MAP[output_language.value]
-        
-        logging.info(f"Received request for document: {file.filename}. Report language: {output_language.value} ({language_code})")
-        
+        logging.info(
+            f"Received request for document: {file.filename}. "
+            f"User: {user_id}, Language: {output_language.value} ({language_code})"
+        )
+
         file_content = await file.read()
 
-        # Perform the verification, passing the ISO language code to the service
         report_data: VerificationReport = verification_service.verify_document(
             file_content=file_content,
             filename=file.filename,
             description=description,
-            output_language=language_code
+            output_language=language_code,
+            user_id=user_id
         )
-        
         pdf_buffer = verification_service.generate_pdf_report(report_data)
         
         safe_filename = "".join(c for c in file.filename if c.isalnum() or c in ('.', '_')).rstrip()

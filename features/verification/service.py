@@ -106,51 +106,46 @@ except Exception as e:
     logging.warning("PDFs with non-Latin text may not render correctly")
 
 
+
 class DocumentVerificationService:
-    """
-    Service to handle document verification, storage, redaction, and multilingual reporting.
-    """
     def __init__(self):
-        # --- API Clients Initialization ---
         self.vision_client = vision.ImageAnnotatorClient()
         self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        # --- Google Cloud Storage Configuration ---
+
         try:
             self.storage_client = storage.Client()
-            self.bucket_name = os.getenv("BUCKET_NAME")
+            self.bucket_name = os.getenv("GCS_BUCKET_NAME")
             if not self.bucket_name:
-                logging.warning("GCS BUCKET_NAME environment variable not set. File uploads will be skipped.")
+                logging.warning("GCS BUCKET_NAME not set.")
                 self.bucket = None
             else:
                 self.bucket = self.storage_client.bucket(self.bucket_name)
         except Exception as e:
-            logging.error(f"Error initializing Google Cloud Storage client: {e}")
+            logging.error(f"GCS client init error: {e}")
             self.bucket = None
-        
-        # --- Gemini API Configuration ---
+
         try:
             genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         except Exception as e:
-            logging.error(f"Error configuring Gemini API: {e}")
-            raise ConnectionError("Could not configure Gemini API. Check API key.") from e
-
-    def _upload_to_gcs(self, content: bytes, filename: str) -> str | None:
-        """Uploads file content to Google Cloud Storage and returns the public URL."""
+            logging.error(f"Gemini API config error: {e}")
+            raise ConnectionError("Could not configure Gemini API.") from e
+    
+    def _upload_redacted_to_gcs(self, redacted_text: str, filename: str, user_id: str) -> str | None:
+        """Uploads only the redacted text file to GCS under docs/{user_id}/filename.txt"""
         if not self.bucket:
-            logging.info("Skipping GCS upload because bucket is not configured.")
+            logging.info("Skipping GCS upload (bucket not configured).")
             return None
         try:
-            # Create a unique filename to avoid overwrites
-            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-            unique_filename = f"uploads/{timestamp}_{filename}"
-            
-            blob = self.bucket.blob(unique_filename)
-            blob.upload_from_string(content, content_type='application/octet-stream')
-            logging.info(f"Successfully uploaded {filename} to GCS as {unique_filename}.")
+            blob_path = f"docs/{user_id}/{filename}.txt"
+            blob = self.bucket.blob(blob_path)
+            blob.upload_from_string(redacted_text.encode("utf-8"))
+            logging.info(f"Uploaded redacted file to GCS at {blob_path}",content_type="text/plain")
+            logging.info(f"Upload successful: {blob_path}")
+
             return blob.public_url
         except Exception as e:
-            logging.error(f"Failed to upload {filename} to GCS. Error: {e}")
+            logging.error(f"Failed to upload redacted file {filename} for {user_id}. Error: {e}")
+
             return None
 
     def _detect_language(self, text: str) -> str:
@@ -281,24 +276,44 @@ class DocumentVerificationService:
                 "confidence_score": 0
             }
 
-    def verify_document(self, file_content: bytes, filename: str, description: str, output_language: str) -> VerificationReport:
-        """Orchestrates the full document verification workflow with user-selected output language."""
-        storage_url = self._upload_to_gcs(content=file_content, filename=filename)
+    def verify_document(
+    self, file_content: bytes, filename: str, description: str, output_language: str, user_id: str
+) -> VerificationReport:
+        """Orchestrates the full document verification workflow with user-selected output language.
+    """
+        # 1. Extract text from the document (OCR)
         extracted_text = self._extract_text_from_document(content=file_content, filename=filename)
+
+        # 2. Detect language of the extracted text
         detected_language = self._detect_language(extracted_text)
-        
+
+        # 3. Redact sensitive information
+        redacted_extracted_text = self._redact_sensitive_info(extracted_text, detected_language)
+
+        # 4. Upload ONLY the redacted text file to GCS
+        storage_url = self._upload_redacted_to_gcs(
+            redacted_text=redacted_extracted_text,
+            filename=filename,
+            user_id=user_id
+        )
+
+        # 5. Analyze text with Gemini for verification
         analysis_result = self._analyze_text_with_gemini(
-            text=extracted_text, 
+            text=redacted_extracted_text,
             description=description,
             detected_language=detected_language,
-            output_language=output_language
+            output_language=output_language,
         )
-        
-        redacted_extracted_text = self._redact_sensitive_info(extracted_text, detected_language)
-        
-        analysis_details_raw = analysis_result.get("details", "No details available.")
-        analysis_details_str = "\n".join(f"- {item}" for item in analysis_details_raw) if isinstance(analysis_details_raw, list) else str(analysis_details_raw)
 
+        # 6. Format analysis details
+        analysis_details_raw = analysis_result.get("details", "No details available.")
+        analysis_details_str = (
+            "\n".join(f"- {item}" for item in analysis_details_raw)
+            if isinstance(analysis_details_raw, list)
+            else str(analysis_details_raw)
+        )
+
+        # 7. Build the final verification report
         report = VerificationReport(
             filename=filename,
             storage_url=storage_url,
@@ -310,7 +325,10 @@ class DocumentVerificationService:
             analysis_details=analysis_details_str,
             extracted_text=redacted_extracted_text or "No text could be extracted."
         )
+
         return report
+   
+      
 
     def generate_pdf_report(self, report_data: VerificationReport) -> BytesIO:
         """Generates a PDF report using language-specific fonts."""
@@ -428,3 +446,4 @@ class DocumentVerificationService:
 
 # Create a single instance of the service to be imported by the router
 verification_service = DocumentVerificationService()
+
