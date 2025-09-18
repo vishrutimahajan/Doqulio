@@ -36,15 +36,15 @@ fonts_base_dir = os.path.join(os.path.dirname(__file__), 'fonts')
 
 # Font family mapping for supported languages
 LANGUAGE_FONT_MAP = {
-    'hi': 'NotoSansDevanagari',  # Hindi
-    'bn': 'NotoSansBengali',     # Bengali
-    'mr': 'NotoSansDevanagari',  # Marathi (uses Devanagari script)
-    'te': 'NotoSansTelugu',      # Telugu
-    'ta': 'NotoSansTamil',       # Tamil
-    'gu': 'NotoSansGujarati',    # Gujarati
-    'kn': 'NotoSansKannada',     # Kannada
-    'ml': 'NotoSansMalayalam',   # Malayalam
-    'pa': 'NotoSansGurmukhi',    # Punjabi (uses Gurmukhi script)
+    'hi': 'NotoSansDevanagari',    # Hindi
+    'bn': 'NotoSansBengali',      # Bengali
+    'mr': 'NotoSansDevanagari',    # Marathi (uses Devanagari script)
+    'te': 'NotoSansTelugu',       # Telugu
+    'ta': 'NotoSansTamil',        # Tamil
+    'gu': 'NotoSansGujarati',     # Gujarati
+    'kn': 'NotoSansKannada',      # Kannada
+    'ml': 'NotoSansMalayalam',    # Malayalam
+    'pa': 'NotoSansGurmukhi',     # Punjabi (uses Gurmukhi script)
     'en': 'Poppins'              # English
 }
 
@@ -104,7 +104,6 @@ try:
 except Exception as e:
     logging.error(f"Error during font registration: {e}")
     logging.warning("PDFs with non-Latin text may not render correctly")
-
 
 
 class DocumentVerificationService:
@@ -327,8 +326,79 @@ class DocumentVerificationService:
         )
 
         return report
-   
-      
+    
+    def simple_analyze(self, file_content: bytes, filename: str, description: str) -> dict:
+        """
+        Performs a simple text-based verification and returns the result as a dictionary.
+        This function does not generate a PDF or save the output.
+        """
+        # 1. Extract text from the document (OCR)
+        extracted_text = self._extract_text_from_document(content=file_content, filename=filename)
+
+        # 2. Detect language of the extracted text
+        detected_language = self._detect_language(extracted_text)
+
+        # 3. Redact sensitive information
+        redacted_extracted_text = self._redact_sensitive_info(extracted_text, detected_language)
+
+        # 4. Analyze the text with a simple Gemini prompt
+        if not extracted_text:
+            return {
+                "status": "ERROR",
+                "summary": "OCR failed to extract any text from the document.",
+                "details": ["No text was available for analysis."],
+                "confidence_score": 0,
+                "document_description": description,
+                "filename": filename,
+                "redacted_text": ""
+            }
+
+        prompt = f"""
+        Act as a document verifier. Your task is to briefly analyze the following text to determine if it is a plausible document of the type "{description}". 
+        Provide a concise, one-sentence conclusion and a bulleted list of key findings. The output should be a single JSON object.
+
+        **Source Document Text:**
+        ---
+        {redacted_extracted_text}
+        ---
+
+        **RESPONSE FORMAT:**
+        {{
+          "status": "one of ['VERIFIED', 'SUSPICIOUS', 'INDETERMINATE']",
+          "summary": "A one-sentence conclusion.",
+          "details": [
+            "A key finding.",
+            "Another key finding."
+          ],
+          "confidence_score": "An integer between 0 and 100."
+        }}
+        """
+        raw_response_text = ""
+        try:
+            response = self.gemini_model.generate_content(prompt)
+            raw_response_text = response.text
+            cleaned_response = raw_response_text.strip().replace("```json", "").replace("```", "")
+            analysis_result = json.loads(cleaned_response)
+
+            # Add filename, document description, and redacted text to the final response
+            analysis_result["filename"] = filename
+            analysis_result["document_description"] = description
+            analysis_result["redacted_text"] = redacted_extracted_text
+            
+            return analysis_result
+
+        except (json.JSONDecodeError, AttributeError, Exception) as e:
+            logging.error(f"Error parsing Gemini simple analysis response: {e}")
+            logging.error(f"--- FAULTY AI RESPONSE TEXT --- \n{raw_response_text}\n-----------------------------")
+            return {
+                "status": "ERROR",
+                "summary": "AI analysis failed due to an invalid response format.",
+                "details": [f"Error: {e}", f"Raw response: {raw_response_text}"],
+                "confidence_score": 0,
+                "document_description": description,
+                "filename": filename,
+                "redacted_text": redacted_extracted_text or ""
+            }
 
     def generate_pdf_report(self, report_data: VerificationReport) -> BytesIO:
         """Generates a PDF report using language-specific fonts."""
@@ -446,4 +516,3 @@ class DocumentVerificationService:
 
 # Create a single instance of the service to be imported by the router
 verification_service = DocumentVerificationService()
-

@@ -3,6 +3,7 @@
 import logging
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from fastapi.responses import StreamingResponse
+from typing import Dict, Any
 
 # Import the service and schemas
 from features.verification.service import verification_service
@@ -85,6 +86,42 @@ async def verify_document_endpoint(
 
     except Exception as e:
         logging.error(f"An unexpected error occurred during document verification for {file.filename}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An internal error occurred while processing the document. Details: {str(e)}"
+        )
+        
+@router.post(
+    "/simple-analyze",
+    summary="Perform a simple text analysis and get a JSON response",
+    description="Analyzes the document for plausibility and returns a quick, simple JSON verification report. No PDF is generated."
+)
+async def simple_analyze_endpoint(
+    file: UploadFile = File(..., description="The document file to analyze."),
+    description: str = Form(
+        ..., 
+        description="A short description of what the document is supposed to be (e.g., 'An invoice from ACME Corp')."
+    ),
+) -> Dict[str, Any]:
+    """
+    A lightweight endpoint for quick text analysis.
+    """
+    try:
+        logging.info(f"Received request for simple analysis of document: {file.filename}")
+
+        file_content = await file.read()
+        
+        analysis_result = verification_service.simple_analyze(
+            file_content=file_content,
+            filename=file.filename,
+            description=description
+        )
+
+        logging.info(f"Successfully completed simple analysis for {file.filename}.")
+        return analysis_result
+
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during simple analysis for {file.filename}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An internal error occurred while processing the document. Details: {str(e)}"
